@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/healthcareone.db
+backend/healthcareone.db-shm
+backend/healthcareone.db-wal
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
