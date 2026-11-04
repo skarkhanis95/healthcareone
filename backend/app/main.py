@@ -4,6 +4,17 @@ import os
 import uuid
 from typing import Any, Dict, List, Optional
 
+try:  # trust the OS certificate store so Gemini calls work behind corporate/proxy TLS inspection
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+except ImportError:
+    pass
+
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
