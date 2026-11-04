@@ -416,6 +416,47 @@ class Simulation:
             })
         return dict(appointment, correlation_id=correlation_id, idempotent_replay=False)
 
+    def reschedule_appointment(
+        self, appointment_id: str, slot_id: str, confirmed: bool, idempotency_key: str,
+        role: str, correlation_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self.require_role(role, ("patient",))
+        if not confirmed:
+            raise DomainError(422, "confirmation_required", "Patient confirmation is required.")
+        if not idempotency_key:
+            raise DomainError(400, "idempotency_key_required", "An idempotency key is required.")
+        correlation_id = self.correlation_id(correlation_id)
+        with self.db.transaction() as connection:
+            appointment = self._get(connection, "appointment", appointment_id)
+            if not appointment:
+                raise DomainError(404, "appointment_not_found", "Appointment was not found.")
+            if appointment["slot_id"] == slot_id:
+                return dict(appointment, correlation_id=correlation_id, idempotent_replay=True)
+            slot = self._get(connection, "slot", slot_id)
+            if not slot:
+                raise DomainError(404, "slot_not_found", "Appointment slot was not found.")
+            if not slot["available"]:
+                raise DomainError(409, "slot_unavailable", "This appointment slot is no longer available.")
+            previous = self._get(connection, "slot", appointment["slot_id"])
+            if previous:
+                previous["available"] = True
+                self._put(connection, "slot", previous)
+            slot["available"] = False
+            self._put(connection, "slot", slot)
+            previous_start = appointment["starts_at"]
+            appointment.update({
+                "doctor_id": slot["doctor_id"], "slot_id": slot_id, "starts_at": slot["starts_at"],
+                "mode": slot["mode"], "status": "confirmed",
+            })
+            self._put(connection, "appointment", appointment)
+            details = {
+                "appointment_id": appointment_id, "patient_id": appointment["patient_id"],
+                "previous_starts_at": previous_start,
+            }
+            self._event(connection, "appointment.rescheduled", correlation_id, details)
+            self._audit(connection, "appointment.rescheduled", role, correlation_id, details)
+        return dict(appointment, correlation_id=correlation_id, idempotent_replay=False)
+
     def create_virtual_session(
         self, appointment_id: str, confirmed: bool, role: str, correlation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -1028,6 +1069,11 @@ class Simulation:
             raise DomainError(404, "hospital_not_found", "Hospital was not found.")
         states = {item["id"]: item for item in self.db.list_entities("ipd_state")}
         return [clinical.apply_state(patient, states.get(patient["id"])) for patient in clinical.ward_patients(hospital_id)]
+
+    def opd_board(self, hospital_id: str) -> Dict[str, Any]:
+        if not self.db.get_entity("hospital", hospital_id):
+            raise DomainError(404, "hospital_not_found", "Hospital was not found.")
+        return clinical.opd_board(hospital_id)
 
     def ward(self, hospital_id: str) -> Dict[str, Any]:
         patients = self._ward(hospital_id)

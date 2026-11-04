@@ -91,6 +91,12 @@ async def unexpected_error_handler(request: Request, error: Exception) -> JSONRe
     )
 
 
+class RescheduleRequest(BaseModel):
+    slot_id: str
+    patient_confirmed: bool
+    idempotency_key: str = Field(..., min_length=1, max_length=128)
+
+
 class BookingRequest(BaseModel):
     patient_id: str = "PAT-1001"
     slot_id: str
@@ -318,6 +324,19 @@ def create_appointment(
     ))
 
 
+@app.post("/api/v1/appointments/{appointment_id}/reschedule")
+def reschedule_appointment(
+    appointment_id: str,
+    body: RescheduleRequest,
+    request: Request,
+    role: Optional[str] = Header(None, alias="X-Demo-Role"),
+) -> Dict[str, Any]:
+    return response(request, simulation.reschedule_appointment(
+        appointment_id, body.slot_id, body.patient_confirmed, body.idempotency_key,
+        selected_role(role), request.state.correlation_id,
+    ))
+
+
 @app.get("/api/v1/appointments/{appointment_id}")
 def appointment(
     appointment_id: str,
@@ -399,6 +418,16 @@ def hospitals(
 ) -> Dict[str, Any]:
     require_operations_role(role)
     return response(request, simulation.capacity())
+
+
+@app.get("/api/v1/hospitals/{hospital_id}/opd")
+def hospital_opd(
+    hospital_id: str,
+    request: Request,
+    role: Optional[str] = Header(None, alias="X-Demo-Role"),
+) -> Dict[str, Any]:
+    require_operations_role(role)
+    return response(request, simulation.opd_board(hospital_id))
 
 
 @app.get("/api/v1/hospitals/{hospital_id}/live")

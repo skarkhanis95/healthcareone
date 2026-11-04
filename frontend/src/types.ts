@@ -87,3 +87,11 @@ export interface Ward {
   summary: { census: number; high_risk: number; medium_risk: number; charted: number; meds_due: number };
 }
 export interface ChartDraft { sections: Record<string, string>; narrative: string; mode: string; fallback_reason: string | null }
+export interface OpdDoctor {
+  doctor: string; specialty: string; room: string; status: string; appointments: number; seen: number;
+  in_queue: number; avg_wait_minutes: number; now_serving: string | null;
+}
+export interface OpdBoard {
+  hospital_id: string; doctors: OpdDoctor[];
+  summary: { doctors_on_opd: number; appointments: number; seen: number; in_queue: number; avg_wait_minutes: number };
+}

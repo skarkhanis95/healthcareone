@@ -1,16 +1,17 @@
 import { ReactNode, useEffect, useState } from "react";
 import { api } from "../api";
 import { formatTime, useAction, useLive, useToast } from "../hooks";
-import { ChartDraft, HospitalLive, IpdPatient, Ward } from "../types";
+import { ChartDraft, HospitalLive, IpdPatient, OpdBoard, Ward } from "../types";
 import { Empty, ModeTag, Panel, Shell, StatusBadge, SyntheticBanner, ToastView } from "../ui";
 
 type Persona = "admin" | "nurse";
-type AdminTab = "overview" | "emergency" | "wards" | "staffing" | "theatre";
+type AdminTab = "overview" | "emergency" | "opd" | "wards" | "staffing" | "theatre";
 type NurseTab = "obs" | "meds" | "chart";
 
 const ADMIN_TABS: { id: AdminTab; label: string; icon: string }[] = [
   { id: "overview", label: "Overview", icon: "▤" },
   { id: "emergency", label: "Emergency dept", icon: "✚" },
+  { id: "opd", label: "OPD board", icon: "☷" },
   { id: "wards", label: "Inpatient wards", icon: "▦" },
   { id: "staffing", label: "Staffing", icon: "☺" },
   { id: "theatre", label: "Operating theatre", icon: "⚕" },
@@ -47,6 +48,7 @@ export default function HospitalConsole({ hospitalId }: { hospitalId: string }) 
 
   const { data: live, error } = useLive(() => api<HospitalLive>(`/hospitals/${hospitalId}/live`, "presenter"), [hospitalId], 5000);
   const { data: ward, reload } = useLive(() => api<Ward>(`/hospitals/${hospitalId}/ipd`, role), [hospitalId, role], 5000);
+  const { data: opd } = useLive(() => api<OpdBoard>(`/hospitals/${hospitalId}/opd`, "presenter"), [hospitalId], 5000);
   const { busy, run } = useAction(reload, notify);
 
   useEffect(() => {
@@ -85,6 +87,25 @@ export default function HospitalConsole({ hospitalId }: { hospitalId: string }) 
   const give = (medId: string) => current && run(() => api(`/ipd/${current.id}/medications/${medId}/administer`, "nurse", { method: "POST" }), "Medication recorded as given.");
 
   const adminView: Record<AdminTab, ReactNode> = {
+    opd: opd && <div className="portal-stack">
+      <div className="btn-row"><a className="btn btn-primary" href={`/hospital/${hospitalId}/display`} target="_blank" rel="noreferrer">▣ Show Display Board</a>
+        <small>Opens a full-screen, high-contrast board for waiting areas.</small></div>
+      <div className="kpi-strip">
+        <Kpi label="DOCTORS ON OPD" value={opd.summary.doctors_on_opd} />
+        <Kpi label="APPOINTMENTS TODAY" value={opd.summary.appointments} />
+        <Kpi label="SEEN SO FAR" value={opd.summary.seen} />
+        <Kpi label="IN QUEUE" value={opd.summary.in_queue} tone={opd.summary.in_queue > 20 ? "kpi-warn" : ""} />
+        <Kpi label="AVG WAIT" value={`${opd.summary.avg_wait_minutes} min`} tone={opd.summary.avg_wait_minutes > 30 ? "kpi-warn" : ""} />
+      </div>
+      <Panel title="Doctors on OPD" subtitle="Synthetic demo data">
+        <table><thead><tr><th>Doctor</th><th>Room</th><th>Status</th><th>Appointments</th><th>Seen</th><th>In queue</th><th>Avg wait</th></tr></thead>
+          <tbody>{opd.doctors.map((row) => <tr key={row.room}>
+            <td><strong>{row.doctor}</strong><br /><small>{row.specialty}</small></td><td>{row.room}</td>
+            <td><span className={`pill ${row.status === "On break" ? "pill-warn" : row.status === "Free" ? "pill-good" : ""}`}>{row.status}</span>{row.now_serving && <small> {row.now_serving}</small>}</td>
+            <td>{row.appointments}</td><td>{row.seen}</td><td><strong>{row.in_queue}</strong></td>
+            <td className={row.avg_wait_minutes > 30 ? "cov-gap" : ""}>{row.avg_wait_minutes ? `${row.avg_wait_minutes} min` : "-"}</td></tr>)}</tbody></table>
+      </Panel>
+    </div>,
     overview: live && <div className="portal-stack">
       <div className="kpi-strip">
         <Kpi label="ED CENSUS" value={`${live.hospital.ed_census}/${live.hospital.ed_capacity}`} tone={live.hospital.pressure === "Critical" ? "kpi-bad" : ""} />

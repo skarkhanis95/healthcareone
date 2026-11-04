@@ -360,3 +360,41 @@ async def draft_chart(patient: Dict[str, Any], live_available: bool) -> Dict[str
     except Exception as error:  # drafting must degrade to the deterministic note, never fail the nurse's workflow
         return {"sections": sections, "narrative": fallback, "mode": "deterministic_simulation",
                 "fallback_reason": "Live AI failed (%s); used the rule-based note." % type(error).__name__}
+
+
+OPD_DOCTORS = [
+    ("Dr. Meera Shah", "Orthopaedics"), ("Dr. Priya Nair", "General Medicine"), ("Dr. Sam Whitfield", "Cardiology"),
+    ("Dr. Alan Brooks", "General Surgery"), ("Dr. Lena Park", "Neurology"), ("Dr. Arjun Rao", "Orthopaedics"),
+    ("Dr. Neha Kapoor", "Paediatrics"), ("Dr. Rahul Menon", "ENT"),
+]
+
+
+def opd_board(hospital_id: str) -> Dict[str, Any]:
+    """Deterministic synthetic OPD board: one row per doctor with room, load, queue and wait."""
+    seed = sum(ord(char) for char in hospital_id)
+    count = 6 + seed % 3
+    rows = []
+    for index in range(count):
+        name, specialty = OPD_DOCTORS[(index + seed) % len(OPD_DOCTORS)]
+        booked = 12 + (seed * (index + 3)) % 14
+        seen = min(booked, 3 + (seed + index * 5) % 9)
+        queue = (seed * 3 + index * 5 + index * index) % 8
+        status = "On break" if (seed + index) % 9 == 0 else ("In consultation" if queue or seen < booked else "Free")
+        if status == "On break":
+            queue = 0
+        wait = 0 if not queue else 6 + queue * 4 + (seed + index) % 5
+        rows.append({
+            "doctor": name, "specialty": specialty, "room": "OPD-%d%02d" % (1 + index // 4, index + 1),
+            "status": status, "appointments": booked, "seen": seen, "in_queue": queue, "avg_wait_minutes": wait,
+            "now_serving": "Token %d" % (seen + 1) if status == "In consultation" else None,
+        })
+    waiting = [row for row in rows if row["in_queue"]]
+    total_queue = sum(row["in_queue"] for row in rows)
+    return {
+        "hospital_id": hospital_id, "doctors": rows,
+        "summary": {
+            "doctors_on_opd": sum(1 for row in rows if row["status"] != "On break"), "appointments": sum(row["appointments"] for row in rows),
+            "seen": sum(row["seen"] for row in rows), "in_queue": total_queue,
+            "avg_wait_minutes": round(sum(row["avg_wait_minutes"] * row["in_queue"] for row in waiting) / total_queue) if total_queue else 0,
+        },
+    }

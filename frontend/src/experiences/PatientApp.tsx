@@ -1,7 +1,8 @@
 import { FormEvent, ReactNode, useEffect, useRef, useState } from "react";
 import { API_BASE, api, newIdempotencyKey } from "../api";
 import { formatTime, useAction, useLive, useToast } from "../hooks";
-import { AssistantReply, Journey, Prescription, Slot } from "../types";
+import { Appointment, AssistantReply, Journey, Prescription, Slot } from "../types";
+import { BookingNotice, PhoneDrawer } from "./PhoneDrawer";
 import { Empty, ModeTag, Panel, Shell, StatusBadge, SyntheticBanner, ToastView } from "../ui";
 
 interface Msg {
@@ -11,6 +12,7 @@ interface Msg {
   mode?: string;
   note?: string | null;
   slots?: Slot[];
+  appointmentId?: string;
 }
 
 type Section = "home" | "appointments" | "prescriptions" | "record" | "profile" | "assistant";
@@ -55,7 +57,9 @@ export default function PatientApp() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
-  const [confirming, setConfirming] = useState<{ slot: Slot; key: string } | null>(null);
+  const [confirming, setConfirming] = useState<{ slot: Slot; key: string; rescheduleId?: string } | null>(null);
+  const [resched, setResched] = useState<{ appointmentId: string; slots: Slot[] } | null>(null);
+  const [notice, setNotice] = useState<BookingNotice | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const seenAppointments = useRef(0);
   const seenRx = useRef<number | null>(null);
@@ -68,7 +72,7 @@ export default function PatientApp() {
   // A reset from the Demo Director clears the conversation so it never shows stale bookings.
   useEffect(() => {
     const count = journey?.appointments.length ?? 0;
-    if (seenAppointments.current > 0 && count === 0) { setMessages([]); setConfirming(null); }
+    if (seenAppointments.current > 0 && count === 0) { setMessages([]); setConfirming(null); setResched(null); setNotice(null); }
     seenAppointments.current = count;
   }, [journey]);
 
@@ -102,14 +106,42 @@ export default function PatientApp() {
   }
 
   const confirmBooking = () => confirming && run(async () => {
-    const slot = confirming.slot;
-    await api("/appointments", ROLE, {
-      method: "POST",
-      body: { patient_id: PATIENT_ID, slot_id: slot.id, patient_confirmed: true, idempotency_key: confirming.key },
-    });
+    const { slot, rescheduleId } = confirming;
+    const body = { patient_confirmed: true, idempotency_key: confirming.key };
+    const saved = rescheduleId
+      ? await api<{ id: string }>(`/appointments/${rescheduleId}/reschedule`, ROLE, { method: "POST", body: { ...body, slot_id: slot.id } })
+      : await api<{ id: string }>("/appointments", ROLE, { method: "POST", body: { ...body, patient_id: PATIENT_ID, slot_id: slot.id } });
     setConfirming(null);
-    setMessages((current) => [...current, { id: nextId(), from: "assistant", text: `You're booked with ${slot.doctor.name}. Nothing was booked until you confirmed. You can manage it under Appointments.` }]);
-  }, "Appointment booked.");
+    setResched(null);
+    setNotice({ kind: rescheduleId ? "rescheduled" : "booked", slot, appointmentId: saved.id, patientName: patient?.name ?? "there", patientAddress: patient?.address ?? "" });
+    setMessages((current) => [...current, {
+      id: nextId(), from: "assistant", appointmentId: saved.id,
+      text: rescheduleId ? `Done. Your appointment moved to ${formatTime(slot.starts_at)} with ${slot.doctor.name}.`
+        : `You're booked with ${slot.doctor.name}. Nothing was booked until you confirmed. A confirmation was sent to your phone.`,
+    }]);
+  }, confirming?.rescheduleId ? "Appointment rescheduled." : "Appointment booked.");
+
+  const openReschedule = (appointment: Appointment) => run(async () => {
+    const open = await api<Slot[]>("/availability", ROLE);
+    const options = open.filter((slot) => slot.id !== appointment.slot_id)
+      .sort((a, b) => Number(b.doctor_id === appointment.doctor_id) - Number(a.doctor_id === appointment.doctor_id) || a.starts_at.localeCompare(b.starts_at))
+      .slice(0, 4);
+    setResched({ appointmentId: appointment.id, slots: options });
+  });
+
+  function ReschedulePanel({ appointment }: { appointment: Appointment }) {
+    if (resched?.appointmentId !== appointment.id) return null;
+    return <div className="resched-panel slot-list">
+      <small><strong>Next available slots</strong></small>
+      {resched.slots.length === 0 && <small>No other slots are open right now.</small>}
+      {resched.slots.map((slot) => <div className="slot-card" key={slot.id}>
+        <span className="avatar">{slot.doctor.name.split(" ").slice(-1)[0][0]}</span>
+        <div><strong>{slot.doctor.name}</strong><small>{slot.doctor.specialty} · {slot.doctor.location}</small><small>{formatTime(slot.starts_at)} · {slot.mode.replace("_", " ")}</small></div>
+        <button className="btn btn-primary btn-small" disabled={busy} onClick={() => setConfirming({ slot, key: newIdempotencyKey(), rescheduleId: appointment.id })}>Choose</button>
+      </div>)}
+      <button className="btn btn-quiet btn-small" onClick={() => { setResched(null); setConfirming(null); }}>Keep current time</button>
+    </div>;
+  }
 
   const startSession = (appointmentId: string) => run(() => api("/virtual-sessions", ROLE, { method: "POST", body: { appointment_id: appointmentId, patient_confirmed: true } }));
   const advanceSession = (id: string) => run(() => api(`/virtual-sessions/${id}/advance`, ROLE, { method: "POST" }));
@@ -180,6 +212,12 @@ export default function PatientApp() {
     </Panel>
   </div>;
 
+  const confirmBar = confirming && <div className="confirm-bar">
+    <p>{confirming.rescheduleId ? "Move your appointment to" : "Book"} <strong>{confirming.slot.doctor.name}</strong> on {formatTime(confirming.slot.starts_at)} ({confirming.slot.mode.replace("_", " ")})?</p>
+    <div className="btn-row"><button className="btn btn-primary btn-small" disabled={busy} onClick={confirmBooking}>{confirming.rescheduleId ? "Confirm new time" : "Confirm booking"}</button>
+      <button className="btn btn-quiet btn-small" onClick={() => setConfirming(null)}>Cancel</button></div>
+  </div>;
+
   const appointments = <div className="portal-stack">
     <div className="section-head"><h1>Appointments</h1><button className="btn btn-primary" onClick={() => setSection("assistant")}>＋ Book with assistant</button></div>
     <Panel title="Upcoming">
@@ -187,8 +225,11 @@ export default function PatientApp() {
         <div><strong>{formatTime(item.starts_at)}</strong><small>{item.id} · {item.mode.replace("_", " ")}</small></div>
         <StatusBadge status={item.status} />
         {item.mode === "virtual" && <VisitControls appointmentId={item.id} />}
+        {!resched && <button className="btn btn-outline btn-small" disabled={busy} onClick={() => void openReschedule(item)}>Reschedule</button>}
+        <ReschedulePanel appointment={item} />
       </div>)}</div> : <Empty title="No upcoming appointments" text="Type what you need in the assistant, for example: I need an orthopaedic appointment this week." />}
     </Panel>
+    {confirmBar}
     <Panel title="Past visits">
       <div className="list-stack">{(patient?.past_visits ?? []).map((visit) => <div className="appt-row" key={visit.date + visit.reason}>
         <div><strong>{visit.reason}</strong><small>{visit.date} · {visit.doctor}</small><small>{visit.summary}</small></div><StatusBadge status="completed" /></div>)}</div>
@@ -265,24 +306,25 @@ export default function PatientApp() {
           <div className={`bubble ${message.from}`}>
             <p>{message.text}</p>
             {message.from === "assistant" && message.mode && <div className="bubble-meta"><ModeTag mode={message.mode} />{message.note && <small>{message.note}</small>}</div>}
+            {message.appointmentId && (() => { const appt = (journey?.appointments ?? []).find((item) => item.id === message.appointmentId);
+              return appt && <div className="btn-row">
+                {!resched && <button className="btn btn-outline btn-small" disabled={busy} onClick={() => void openReschedule(appt)}>Reschedule · see next slots</button>}
+                <ReschedulePanel appointment={appt} /></div>; })()}
             {message.slots && message.slots.length > 0 && <div className="slot-list">
-              {message.slots.map((slot) => <div className="slot-card" key={slot.id}>
+              {message.slots.map((slot) => { const lockedOut = !bookedSlots.has(slot.id) && message.slots!.some((other) => bookedSlots.has(other.id));
+                return <div className={`slot-card${lockedOut ? " slot-disabled" : ""}`} key={slot.id}>
                 <span className="avatar">{slot.doctor.name.split(" ").slice(-1)[0][0]}</span>
                 <div><strong>{slot.doctor.name}</strong><small>{slot.doctor.specialty} · {slot.doctor.location}</small><small>{formatTime(slot.starts_at)} · {slot.mode.replace("_", " ")}</small></div>
-                <button className="btn btn-primary btn-small" disabled={busy || bookedSlots.has(slot.id)} onClick={() => setConfirming({ slot, key: newIdempotencyKey() })}>
-                  {bookedSlots.has(slot.id) ? "Booked" : "Choose"}</button>
-              </div>)}
+                <button className="btn btn-primary btn-small" disabled={busy || lockedOut || bookedSlots.has(slot.id)} onClick={() => setConfirming({ slot, key: newIdempotencyKey() })}>
+                  {bookedSlots.has(slot.id) ? "Booked" : lockedOut ? "Unavailable" : "Choose"}</button>
+              </div>; })}
             </div>}
           </div>
         </div>)}
         {thinking && <div className="bubble-row assistant"><div className="bubble assistant typing"><i /><i /><i /></div></div>}
         <div ref={bottom} />
       </div>
-      {confirming && <div className="confirm-bar">
-        <p>Book <strong>{confirming.slot.doctor.name}</strong> on {formatTime(confirming.slot.starts_at)} ({confirming.slot.mode.replace("_", " ")})?</p>
-        <div className="btn-row"><button className="btn btn-primary btn-small" disabled={busy} onClick={confirmBooking}>Confirm booking</button>
-          <button className="btn btn-quiet btn-small" onClick={() => setConfirming(null)}>Cancel</button></div>
-      </div>}
+      {confirmBar}
       <form className="composer" onSubmit={(event) => void send(event)}>
         <input value={input} maxLength={500} onChange={(event) => setInput(event.target.value)} aria-label="Type your request" placeholder="Type your request…" />
         <button className="btn btn-primary" type="submit" disabled={!input.trim() || thinking}>Send</button>
@@ -297,6 +339,7 @@ export default function PatientApp() {
   return <Shell theme="patient" brand="CareFlow One" tag="PATIENT PORTAL"
     right={<span className="user-chip"><span className="avatar">AM</span>{patient?.name ?? "Alex Morgan"}</span>}>
     <ToastView toast={toast} />
+    <PhoneDrawer notice={notice} onClose={() => setNotice(null)} />
     <SyntheticBanner />
     {error && <div className="inline-error">Cannot reach the service: {error}</div>}
     <div className="portal">

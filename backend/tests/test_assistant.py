@@ -119,3 +119,18 @@ def test_live_success_labelled_live(client, monkeypatch):
     data = send(client, "something phrased oddly about seeing a doctor")
     assert data["mode"] == "live_gemini"
     assert data["intent"] == "virtual_consult"
+
+
+def test_reschedule_moves_appointment_and_frees_old_slot(client):
+    data = send(client, "book an orthopaedic appointment")
+    first, second = data["slots"][0]["id"], data["slots"][1]["id"]
+    booked = client.post("/api/v1/appointments", headers=PATIENT, json={
+        "slot_id": first, "patient_confirmed": True, "idempotency_key": "r1",
+    }).json()["data"]
+    moved = client.post(f"/api/v1/appointments/{booked['id']}/reschedule", headers=PATIENT, json={
+        "slot_id": second, "patient_confirmed": True, "idempotency_key": "r2",
+    })
+    assert moved.status_code == 200
+    assert moved.json()["data"]["slot_id"] == second
+    open_ids = [slot["id"] for slot in client.get("/api/v1/availability", headers=PATIENT).json()["data"]]
+    assert first in open_ids and second not in open_ids
